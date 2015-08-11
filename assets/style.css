@@ -1,0 +1,56 @@
+body {
+    font-family: 'Open Sans', sans-serif;
+}
+.graph {
+    border: #0480be 2px solid;
+}
+
+.legend {
+    margin: 10px;
+    border: #0480be 2px solid;
+    border-radius: 4px;
+    padding: 6px;
+    width: 380px;
+}
+
+.indicator {
+    float: right;
+}
+.title {
+    text-align: center;
+    font-size: x-large;
+}
+.happy {
+    background-image: url(http://www.chillestmonkey.com/img/monkey.gif);
+    width: 430px;
+    height: 295px;
+}
+.sad {
+    background-image: url(https://38.media.tumblr.com/tumblr_mbirotHGBP1rwiv0vo1_500.gif);
+    width: 430px;
+    height: 700px;
+}
+
+.number {
+    float: right;
+}
+
+.legend1 {
+    color: #354bff;
+}
+.legend2 {
+    color: #ff342b;
+}
+.legend3 {
+    color: #5DFC56;
+}
+
+.logs {
+    border: #0480be 2px solid;
+    min-height: 40px;
+}
+
+.logs div {
+    border-bottom: #0480be 1px dashed;
+    font-family: monospace;
+}

@@ -1,0 +1,135 @@
+<html>
+<head>
+    <title>Logalyzer</title>
+    <link rel="icon" href="favicon.png">
+    <script type="text/javascript" src="smoothie.js"></script>
+    <link href="style.css" rel="stylesheet" type="text/css"></link>
+    <link href='http://fonts.googleapis.com/css?family=Open+Sans' rel='stylesheet' type='text/css'>
+    <script type="text/javascript" src="jquery.2.1.4.min.js"></script>
+    <script type="application/javascript">
+        function getGraphConfig(yRangeFunction) {
+            var graphConfig = {
+                millisPerPixel: 47,
+                grid: {fillStyle: '#ffffff', strokeStyle: 'transparent', verticalSections: 0},
+                labels: {fillStyle: '#000000'},
+                yRangeFunction: yRangeFunction
+            };
+            return graphConfig
+        }
+
+        $(document).ready(function () {
+            var log = $("#log");
+
+            function appendLog(msg) {
+                var d = log[0]
+                var doScroll = d.scrollTop == d.scrollHeight - d.clientHeight;
+                msg.prependTo(log)
+                if (doScroll) {
+                    d.scrollTop = d.scrollHeight - d.clientHeight;
+                }
+            }
+
+            var parser = document.createElement('a');
+            parser.href = window.location.origin;
+
+            var webSocketServer = "ws://" + parser.hostname + ":" + parser.port + "/ws";
+            conn = new WebSocket(webSocketServer);
+            conn.onclose = function (evt) {
+                appendLog($("<div><b>Connection closed.</b></div>"))
+            }
+            conn.onmessage = function (evt) {
+                appendLog($("<div/>").text(evt.data))
+            }
+
+            function countYRangeFunction(range) {
+                var diff = range.max - range.min;
+                var border = diff * 0.1;
+                var max = range.max + border;
+                return {min: 0, max: max};
+            }
+
+            function percentYRangeFunction(range) {
+                var border = range.max * 0.25;
+                return {min: 0, max: range.max + border};
+            }
+
+
+            var countGraph = new SmoothieChart(getGraphConfig(countYRangeFunction));
+            var percentGraph = new SmoothieChart(getGraphConfig(percentYRangeFunction));
+
+            // Data
+            var totalLine = new TimeSeries();
+            var errorLine = new TimeSeries();
+            var percentLine = new TimeSeries();
+            var movingAvgLine = new TimeSeries();
+            var errorRateLine = new TimeSeries();
+
+            // Add a random value to each line every second
+            setInterval(function () {
+                $.get("/counts", function (data) {
+                    var counts = $.parseJSON(data);
+
+                    var percentage = counts.logCount == 0 ? 0 : counts.errCount / counts.logCount;
+                    $("#totalCount").text(counts.logCount);
+                    $("#errorCount").text(counts.errCount);
+                    $("#baseline").text(Number(counts.movingAverage * 100).toFixed(2) + "%");
+                    $("#overall-error").text(Number(percentage * 100).toFixed(2) + "%");
+                    $("#error-rate").text(Number(counts.errorRate * 100).toFixed(2) + "%");
+
+                    totalLine.append(new Date().getTime(), counts.logCount);
+                    errorLine.append(new Date().getTime(), counts.errCount);
+                    percentLine.append(new Date().getTime(), percentage)
+                    movingAvgLine.append(new Date().getTime(), counts.movingAverage);
+                    errorRateLine.append(new Date().getTime(), counts.errorRate);
+
+                    if (counts.happy) {
+                        $("#indicator-title").text("All is good");
+                        $("#indicator").removeClass("sad").addClass("happy");
+                    } else {
+                        $("#indicator-title").text("Your logs are sad");
+                        $("#indicator").removeClass("happy").addClass("sad");
+                    }
+                });
+
+            }, 800);
+
+            // Add to SmoothieChart
+            countGraph.addTimeSeries(totalLine, {lineWidth: 3, strokeStyle: '#354bff'});
+            countGraph.addTimeSeries(errorLine, {lineWidth: 3, strokeStyle: '#ff342b'});
+            percentGraph.addTimeSeries(percentLine, {lineWidth: 3, strokeStyle: '#ff342b'});
+            percentGraph.addTimeSeries(movingAvgLine, {lineWidth: 3, strokeStyle: '#354bff'});
+            percentGraph.addTimeSeries(errorRateLine, {lineWidth: 3, strokeStyle: '#5DFC56'});
+
+            countGraph.streamTo(document.getElementById("counts"), 1000 /*delay*/);
+            percentGraph.streamTo(document.getElementById("percentage"), 1000 /*delay*/);
+        });
+
+    </script>
+</head>
+<body>
+<h1>Logalyzer</h1>
+
+<div class="indicator">
+    <div id="indicator-title" class="title">All is good</div>
+    <div id="indicator" class="happy"></div>
+</div>
+<div class="legend">
+    <span class="legend1">Total Count: </span><span id="totalCount" class="legend1 number">0</span>
+    <br/>
+    <span class="legend2">Error Count: </span><span id="errorCount" class="legend2 number">0</span>
+</div>
+<canvas class="graph" id="counts" width="800" height="400"></canvas>
+<div class="legend">
+    <span class="legend1">Error Rate Baseline (sliding window): </span><span id="baseline" class="legend1 number">0%</span>
+    <br/>
+    <span class="legend3">Error Rate: </span><span id="error-rate"
+                                                                         class="legend3 number">0%</span>
+    <br/>
+    <span class="legend2">Overall Error Ratio: </span><span id="overall-error" class="legend2 number">0%</span>
+</div>
+<canvas class="graph" id="percentage" width="800" height="400"></canvas>
+<h3>Logs</h3>
+
+<div id="log" class="logs"></div>
+</body>
+</html>
