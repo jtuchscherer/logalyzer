@@ -1,7 +1,7 @@
 // MIT License:
 //
 // Copyright (c) 2010-2013, Joe Walnes
-//               2013-2014, Drew Noakes
+//               2013-2017, Drew Noakes
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@
 /**
  * Smoothie Charts - http://smoothiecharts.org/
  * (c) 2010-2013, Joe Walnes
- *     2013-2014, Drew Noakes
+ *     2013-2017, Drew Noakes
  *
  * v1.0: Main charting library, by Joe Walnes
  * v1.1: Auto scaling of axis, by Neil Dunn
@@ -73,9 +73,18 @@
  * v1.26: Add support for resizing on high device pixel ratio screens, by @copacetic
  * v1.27: Fix bug introduced in v1.26 for non whole number devicePixelRatio values, by @zmbush
  * v1.28: Add 'minValueScale' option, by @megawac
+ *        Fix 'labelPos' for different size of 'minValueString' 'maxValueString', by @henryn
+ * v1.29: Support responsive sizing, by @drewnoakes
+ * v1.29.1: Include types in package, and make property optional, by @TrentHouliston
+ * v1.30: Fix inverted logic in devicePixelRatio support, by @scanlime
+ * v1.31: Support tooltips, by @Sly1024 and @drewnoakes
+ * v1.32: Support frame rate limit, by @dpuyosa
  */
 
 ;(function(exports) {
+
+  // Date.now polyfill
+  Date.now = Date.now || function() { return new Date().getTime(); };
 
   var Util = {
     extend: function() {
@@ -99,6 +108,18 @@
         }
       }
       return arguments[0];
+    },
+    binarySearch: function(data, value) {
+      var low = 0,
+          high = data.length;
+      while (low < high) {
+        var mid = (low + high) >> 1;
+        if (value < data[mid][0])
+          high = mid;
+        else
+          low = mid + 1;
+      }
+      return low;
     }
   };
 
@@ -260,7 +281,15 @@
    *     fontSize: 15,
    *     fontFamily: 'sans-serif',
    *     precision: 2
-   *   }
+   *   },
+   *   tooltip: false                            // show tooltip when mouse is over the chart
+   *   tooltipLine: {                            // properties for a vertical line at the cursor position
+   *     lineWidth: 1,
+   *     strokeStyle: '#BBBBBB'
+   *   },
+   *   tooltipFormatter: SmoothieChart.tooltipFormatter, // formatter function for tooltip text
+   *   responsive: false,                        // whether the chart should adapt to the size of the canvas
+   *   limitFPS: 0                         // maximum frame rate the chart will render at, in FPS (zero means no limit)
    * }
    * </pre>
    *
@@ -272,7 +301,23 @@
     this.currentValueRange = 1;
     this.currentVisMinValue = 0;
     this.lastRenderTimeMillis = 0;
+
+    this.mousemove = this.mousemove.bind(this);
+    this.mouseout = this.mouseout.bind(this);
   }
+
+  /** Formats the HTML string content of the tooltip. */
+  SmoothieChart.tooltipFormatter = function (timestamp, data) {
+      var timestampFormatter = this.options.timestampFormatter || SmoothieChart.timeFormatter,
+          lines = [timestampFormatter(new Date(timestamp))];
+
+      for (var i = 0; i < data.length; ++i) {
+        lines.push('<span style="color:' + data[i].series.options.strokeStyle + '">' +
+        this.options.yMaxFormatter(data[i].value, this.options.labels.precision) + '</span>');
+      }
+
+      return lines.join('<br>');
+  };
 
   SmoothieChart.defaultChartOptions = {
     millisPerPixel: 20,
@@ -305,7 +350,15 @@
       fontFamily: 'monospace',
       precision: 2
     },
-    horizontalLines: []
+    horizontalLines: [],
+    tooltip: false,
+    tooltipLine: {
+      lineWidth: 1,
+      strokeStyle: '#BBBBBB'
+    },
+    tooltipFormatter: SmoothieChart.tooltipFormatter,
+    responsive: false,
+    limitFPS: 0
   };
 
   // Based on http://inspirit.github.com/jsfeat/js/compatibility.js
@@ -319,7 +372,7 @@
             window.msRequestAnimationFrame      ||
             function(callback) {
               return window.setTimeout(function() {
-                callback(new Date().getTime());
+                callback(Date.now());
               }, 16);
             };
           return requestAnimationFrame.call(window, callback, element);
@@ -432,30 +485,117 @@
     this.start();
   };
 
+  SmoothieChart.prototype.getTooltipEl = function () {
+    // Use a single tooltip element across all chart instances
+    var el = SmoothieChart.tooltipEl;
+    if (!el) {
+      el = SmoothieChart.tooltipEl = document.createElement('div');
+      el.className = 'smoothie-chart-tooltip';
+      el.style.position = 'absolute';
+      el.style.display = 'none';
+      document.body.appendChild(el);
+    }
+    return el;
+  };
+
+  SmoothieChart.prototype.updateTooltip = function () {
+    var el = this.getTooltipEl();
+
+    if (!this.mouseover || !this.options.tooltip) {
+      el.style.display = 'none';
+      return;
+    }
+
+    var time = this.lastRenderTimeMillis - (this.delay || 0);
+
+    // Round time down to pixel granularity, so motion appears smoother.
+    time -= time % this.options.millisPerPixel;
+
+    // x pixel to time
+    var t = this.options.scrollBackwards
+      ? time - this.mouseX * this.options.millisPerPixel
+      : time - (this.canvas.offsetWidth - this.mouseX) * this.options.millisPerPixel;
+
+    var data = [];
+
+     // For each data set...
+    for (var d = 0; d < this.seriesSet.length; d++) {
+      var timeSeries = this.seriesSet[d].timeSeries,
+          // find datapoint closest to time 't'
+          closeIdx = Util.binarySearch(timeSeries.data, t);
+
+      if (closeIdx > 0 && closeIdx < timeSeries.data.length) {
+        data.push({ series: this.seriesSet[d], index: closeIdx, value: timeSeries.data[closeIdx][1] });
+      }
+    }
+
+    if (data.length) {
+      el.innerHTML = this.options.tooltipFormatter.call(this, t, data);
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  };
+
+  SmoothieChart.prototype.mousemove = function (evt) {
+    this.mouseover = true;
+    this.mouseX = evt.offsetX;
+    this.mouseY = evt.offsetY;
+    this.mousePageX = evt.pageX;
+    this.mousePageY = evt.pageY;
+
+    var el = this.getTooltipEl();
+    el.style.top = Math.round(this.mousePageY) + 'px';
+    el.style.left = Math.round(this.mousePageX) + 'px';
+    this.updateTooltip();
+  };
+
+  SmoothieChart.prototype.mouseout = function () {
+    this.mouseover = false;
+    this.mouseX = this.mouseY = -1;
+    if (SmoothieChart.tooltipEl)
+      SmoothieChart.tooltipEl.style.display = 'none';
+  };
+
   /**
    * Make sure the canvas has the optimal resolution for the device's pixel ratio.
    */
-  SmoothieChart.prototype.resize = function() {
-    // TODO this function doesn't handle the value of enableDpiScaling changing during execution
-    if (!this.options.enableDpiScaling || !window || window.devicePixelRatio === 1)
-      return;
+  SmoothieChart.prototype.resize = function () {
+    var dpr = !this.options.enableDpiScaling || !window ? 1 : window.devicePixelRatio,
+        width, height;
+    if (this.options.responsive) {
+      // Newer behaviour: Use the canvas's size in the layout, and set the internal
+      // resolution according to that size and the device pixel ratio (eg: high DPI)
+      width = this.canvas.offsetWidth;
+      height = this.canvas.offsetHeight;
 
-    var dpr = window.devicePixelRatio;
-    var width = parseInt(this.canvas.getAttribute('width'));
-    var height = parseInt(this.canvas.getAttribute('height'));
+      if (width !== this.lastWidth) {
+        this.lastWidth = width;
+        this.canvas.setAttribute('width', (Math.floor(width * dpr)).toString());
+      }
+      if (height !== this.lastHeight) {
+        this.lastHeight = height;
+        this.canvas.setAttribute('height', (Math.floor(height * dpr)).toString());
+      }
+    } else if (dpr !== 1) {
+      // Older behaviour: use the canvas's inner dimensions and scale the element's size
+      // according to that size and the device pixel ratio (eg: high DPI)
+      width = parseInt(this.canvas.getAttribute('width'));
+      height = parseInt(this.canvas.getAttribute('height'));
 
-    if (!this.originalWidth || (Math.floor(this.originalWidth * dpr) !== width)) {
-      this.originalWidth = width;
-      this.canvas.setAttribute('width', (Math.floor(width * dpr)).toString());
-      this.canvas.style.width = width + 'px';
-      this.canvas.getContext('2d').scale(dpr, dpr);
-    }
+      if (!this.originalWidth || (Math.floor(this.originalWidth * dpr) !== width)) {
+        this.originalWidth = width;
+        this.canvas.setAttribute('width', (Math.floor(width * dpr)).toString());
+        this.canvas.style.width = width + 'px';
+        this.canvas.getContext('2d').scale(dpr, dpr);
+      }
 
-    if (!this.originalHeight || (Math.floor(this.originalHeight * dpr) !== height)) {
-      this.originalHeight = height;
-      this.canvas.setAttribute('height', (Math.floor(height * dpr)).toString());
-      this.canvas.style.height = height + 'px';
-      this.canvas.getContext('2d').scale(dpr, dpr);
+      if (!this.originalHeight || (Math.floor(this.originalHeight * dpr) !== height)) {
+        this.originalHeight = height;
+        this.canvas.setAttribute('height', (Math.floor(height * dpr)).toString());
+        this.canvas.style.height = height + 'px';
+        this.canvas.getContext('2d').scale(dpr, dpr);
+      }
     }
   };
 
@@ -467,6 +607,9 @@
       // We're already running, so just return
       return;
     }
+
+    this.canvas.addEventListener('mousemove', this.mousemove);
+    this.canvas.addEventListener('mouseout', this.mouseout);
 
     // Renders a frame, and queues the next frame for later rendering
     var animate = function() {
@@ -486,6 +629,8 @@
     if (this.frame) {
       SmoothieChart.AnimateCompatibility.cancelAnimationFrame(this.frame);
       delete this.frame;
+      this.canvas.removeEventListener('mousemove', this.mousemove);
+      this.canvas.removeEventListener('mouseout', this.mouseout);
     }
   };
 
@@ -541,7 +686,11 @@
   };
 
   SmoothieChart.prototype.render = function(canvas, time) {
-    var nowMillis = new Date().getTime();
+    var nowMillis = Date.now();
+
+    // Respect any frame rate limit.
+    if (this.options.limitFPS > 0 && nowMillis - this.lastRenderTimeMillis < (1000/this.options.limitFPS))
+      return;
 
     if (!this.isAnimatingScale) {
       // We're not animating. We can use the last render time and the scroll speed to work out whether
@@ -557,6 +706,7 @@
     }
 
     this.resize();
+    this.updateTooltip();
 
     this.lastRenderTimeMillis = nowMillis;
 
@@ -747,14 +897,27 @@
       context.restore();
     }
 
+    if (chartOptions.tooltip && this.mouseX >= 0) {
+      // Draw vertical bar to show tooltip position
+      context.lineWidth = chartOptions.tooltipLine.lineWidth;
+      context.strokeStyle = chartOptions.tooltipLine.strokeStyle;
+      context.beginPath();
+      context.moveTo(this.mouseX, 0);
+      context.lineTo(this.mouseX, dimensions.height);
+      context.closePath();
+      context.stroke();
+      this.updateTooltip();
+    }
+
     // Draw the axis values on the chart.
     if (!chartOptions.labels.disabled && !isNaN(this.valueRange.min) && !isNaN(this.valueRange.max)) {
       var maxValueString = chartOptions.yMaxFormatter(this.valueRange.max, chartOptions.labels.precision),
           minValueString = chartOptions.yMinFormatter(this.valueRange.min, chartOptions.labels.precision),
-          labelPos = chartOptions.scrollBackwards ? 0 : dimensions.width - context.measureText(maxValueString).width - 2;
+          maxLabelPos = chartOptions.scrollBackwards ? 0 : dimensions.width - context.measureText(maxValueString).width - 2,
+          minLabelPos = chartOptions.scrollBackwards ? 0 : dimensions.width - context.measureText(minValueString).width - 2;
       context.fillStyle = chartOptions.labels.fillStyle;
-      context.fillText(maxValueString, labelPos, chartOptions.labels.fontSize);
-      context.fillText(minValueString, labelPos, dimensions.height - 2);
+      context.fillText(maxValueString, maxLabelPos, chartOptions.labels.fontSize);
+      context.fillText(minValueString, minLabelPos, dimensions.height - 2);
     }
 
     // Display timestamps along x-axis at the bottom of the chart.
@@ -801,4 +964,3 @@
   exports.SmoothieChart = SmoothieChart;
 
 })(typeof exports === 'undefined' ? this : exports);
-
